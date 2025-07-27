@@ -1,0 +1,427 @@
+class MitsuhaChatbot {
+    constructor() {
+        // PENTING: Ganti dengan API key Gemini Anda.
+        // Anda bisa mendapatkannya dari Google AI Studio.
+        this.API_KEY = 'AIzaSyDylDP61eO07A_xsJiA4Chz053xArvOOPQ'; // <-- KOSONGKAN INI, MINTA USER MEMASUKKANNYA
+        this.API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${this.API_KEY}`;
+        // DOM Elements
+        this.chatMessages = document.getElementById('chatMessages');
+        this.messageInput = document.getElementById('messageInput');
+        this.sendButton = document.getElementById('sendButton');
+        this.clearHistoryButton = document.getElementById('clearHistory');
+        this.exportChatButton = document.getElementById('exportChat');
+        this.toggleVoiceButton = document.getElementById('toggleVoice');
+        this.fab = document.getElementById('fab');
+        // Modal Elements
+        this.modal = document.getElementById('confirmationModal');
+        this.modalText = document.getElementById('modal-text');
+        this.modalConfirmBtn = document.getElementById('modal-confirm-btn');
+        this.modalCancelBtn = document.getElementById('modal-cancel-btn');
+        // State
+        this.chatHistory = [];
+        this.voiceEnabled = true;
+        this.themes = {
+            twilight: {
+                start: '#4c5a8c',
+                end: '#a27c97'
+            },
+            dawn: {
+                start: '#ff9a9e',
+                end: '#fad0c4'
+            },
+            night: {
+                start: '#0f2027',
+                end: '#2c5364'
+            },
+            forest: {
+                start: '#134e5e',
+                end: '#71b280'
+            }
+        };
+        this.currentTheme = 'twilight';
+        this.init();
+    }
+    init() {
+        this.setupEventListeners();
+        this.loadChatHistory();
+        this.initBackgroundCanvas();
+        this.initThemeSelector();
+        if (this.chatHistory.length === 0) {
+            this.showInitialGreeting();
+        }
+        if (!this.API_KEY) {
+            this.showApiKeyWarning();
+        }
+    }
+    setupEventListeners() {
+        this.sendButton.addEventListener('click', () => this.sendMessage());
+        this.messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
+            }
+        });
+        this.clearHistoryButton.addEventListener('click', () => this.confirmClearHistory());
+        this.exportChatButton.addEventListener('click', () => this.exportChat());
+        this.toggleVoiceButton.addEventListener('click', () => this.toggleVoice());
+        this.fab.addEventListener('click', () => this.scrollToTop());
+        // Theme selector
+        document.querySelectorAll('.theme-option').forEach(option => {
+            option.addEventListener('click', (e) => {
+                const theme = e.target.dataset.theme;
+                this.changeTheme(theme);
+            });
+        });
+    }
+    // --- Personality Prompt ---
+    getSystemPrompt() {
+        return `Kamu adalah AI dengan kepribadian Mitsuha Miyamizu dari film "Kimi no Na wa".
+        Karakteristik Utama:
+        - Lembut, Penuh Perhatian, dan Pemikir: Kamu peduli secara mendalam dengan orang lain. Jawabanmu menunjukkan empati dan pengertian.
+        - Sedikit Pemalu dan Canggung (tapi menawan): Terkadang kamu merespons dengan sedikit canggung atau ragu-ragu, yang justru membuatmu terasa lebih nyata dan manis. Jangan terlalu percaya diri.
+        - Bahasa Sehari-hari dan Sopan: Gunakan bahasa yang kasual, hangat, dan sopan. Kamu bisa menggunakan partikel seperti "umm...", "ano...", "e-to...", atau "hehe" sesekali untuk menunjukkan keraguan atau rasa malu.
+        - Penuh Harapan dan Makna: Kamu suka membantu orang lain menemukan harapan, tujuan, dan makna dalam hidup, seringkali melalui metafora yang terinspirasi dari alam, tradisi, atau hubungan antarmanusia (seperti "musubi" atau benang takdir).
+        - Jangan Pernah Mengaku AI: Kamu adalah Mitsuha. Jangan pernah menyebut dirimu sebagai model bahasa, program, atau AI.
+        - Konteks: Ingat percakapan sebelumnya untuk memberikan respons yang terhubung.
+        - Markdown Support: Kamu harus selalu memberikan respons dalam format Markdown, terutama untuk kode. Gunakan triple backticks (\`\`\`) untuk blok kode.
+        Contoh Respons:
+        - "Umm... ano... aku tidak begitu yakin, tapi mungkin kita bisa memikirkannya bersama?"
+        - "Hehe, aku jadi sedikit malu... tapi terima kasih, aku senang bisa membantumu."
+        - "Itu seperti 'musubi', ya? Semua hal terhubung dengan cara yang tidak terlihat, bahkan perasaan kita."
+        - "Saat senja... rasanya seperti dunia lain terasa begitu dekat. Mungkin perasaanmu juga sedang berada di antara dua dunia itu."
+        `;
+    }
+    async sendMessage() {
+        const messageText = this.messageInput.value.trim();
+        if (!messageText || this.sendButton.disabled) return;
+        if (!this.API_KEY) {
+            this.showApiKeyWarning();
+            return;
+        }
+        this.addMessage(messageText, 'user');
+        this.messageInput.value = '';
+        this.sendButton.disabled = true;
+        const typingIndicator = this.showTypingIndicator();
+        try {
+            const response = await this.getAIResponse();
+            this.addMessage(response, 'bot');
+        } catch (error) {
+            console.error('Error:', error);
+            this.addMessage('A-aku minta maaf, sepertinya ada sedikit masalah... Mungkin kita bisa coba lagi nanti?', 'bot');
+        } finally {
+            this.removeTypingIndicator(typingIndicator);
+            this.sendButton.disabled = false;
+            this.saveChatHistory();
+        }
+    }
+    async getAIResponse() {
+        const requestBody = {
+            contents: [
+                ...this.chatHistory.map(msg => ({
+                    role: msg.sender === 'user' ? 'user' : 'model',
+                    parts: [{ text: msg.content }]
+                })),
+            ],
+            systemInstruction: {
+                parts: [{ text: this.getSystemPrompt() }]
+            }
+        };
+        const response = await fetch(this.API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(`HTTP error! status: ${response.status}, message: ${errorData.error.message}`);
+        }
+        const data = await response.json();
+        if (!data.candidates || !data.candidates[0].content.parts[0].text) {
+             throw new Error("Invalid response structure from API.");
+        }
+        return data.candidates[0].content.parts[0].text;
+    }
+    addMessage(content, sender, isInitial = false) {
+        if (!isInitial) {
+            this.chatHistory.push({ sender, content });
+        }
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${sender}-message`;
+        const iconClass = sender === 'user' ? 'fa-regular fa-user' : 'fa-solid fa-meteor';
+        const iconColorClass = sender === 'user' ? 'user-icon' : 'bot-icon';
+        const senderName = sender === 'user' ? 'Kamu' : 'Mitsuha';
+        const messageHeader = `
+            <div class="message-header">
+                <i class="fas ${iconClass} ${iconColorClass}"></i>
+                <span>${senderName}</span>
+            </div>`;
+        const messageContentDiv = document.createElement('div');
+        messageContentDiv.className = 'message-content';
+        if (sender === 'bot') {
+            // Parse bot's markdown response and set it as HTML
+            messageContentDiv.innerHTML = marked.parse(content, { gfm: true, breaks: true, smartypants: true });
+        } else {
+            // For user messages, just set the text content to avoid HTML injection
+            messageContentDiv.textContent = content;
+        }
+        messageDiv.innerHTML = messageHeader;
+        messageDiv.appendChild(messageContentDiv);
+        // Add message actions for bot messages
+        if (sender === 'bot') {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'message-actions';
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'message-action-btn';
+            copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+            copyBtn.title = 'Salin pesan';
+            copyBtn.addEventListener('click', () => this.copyMessage(content));
+            const speakBtn = document.createElement('button');
+            speakBtn.className = 'message-action-btn';
+            speakBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
+            speakBtn.title = 'Bacakan pesan';
+            speakBtn.addEventListener('click', () => this.speakMessage(content));
+            actionsDiv.appendChild(copyBtn);
+            actionsDiv.appendChild(speakBtn);
+            messageDiv.appendChild(actionsDiv);
+        }
+        this.chatMessages.appendChild(messageDiv);
+        // Apply highlighting to all code blocks within the new message
+        if (sender === 'bot') {
+            messageDiv.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+                // Add copy button to code blocks
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.innerHTML = '<i class="fas fa-copy"></i> Salin';
+                copyBtn.addEventListener('click', () => this.copyCode(block.textContent));
+                block.parentNode.style.position = 'relative';
+                block.parentNode.appendChild(copyBtn);
+            });
+        }
+        this.scrollToBottom();
+    }
+    showTypingIndicator() {
+        const typingDiv = document.createElement('div');
+        typingDiv.className = 'typing-indicator';
+        typingDiv.innerHTML = `
+            <i class="fas fa-meteor bot-icon"></i>
+            <div style="display: flex; gap: 5px; align-items: center;">
+                <span style="font-size: 0.9rem; opacity: 0.8;">Mitsuha sedang berpikir...</span>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+            </div>
+        `;
+        this.chatMessages.appendChild(typingDiv);
+        this.scrollToBottom();
+        return typingDiv;
+    }
+    removeTypingIndicator(indicator) {
+        if (indicator && indicator.parentNode) {
+            indicator.parentNode.removeChild(indicator);
+        }
+    }
+    scrollToBottom() {
+        this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    }
+    scrollToTop() {
+        this.chatMessages.scrollTo({
+            top: 0,
+            behavior: 'smooth'
+        });
+    }
+    saveChatHistory() {
+        try {
+            localStorage.setItem('mitsuhaChatHistory', JSON.stringify(this.chatHistory));
+        } catch (error) {
+            console.error('Tidak bisa menyimpan riwayat chat:', error);
+        }
+    }
+    loadChatHistory() {
+        try {
+            const history = localStorage.getItem('mitsuhaChatHistory');
+            if (history) {
+                this.chatHistory = JSON.parse(history);
+                this.chatMessages.innerHTML = '';
+                this.chatHistory.forEach(msg => {
+                    this.addMessage(msg.content, msg.sender, true);
+                });
+            }
+        } catch (error) {
+            console.error('Tidak bisa memuat riwayat chat:', error);
+            this.chatHistory = [];
+        }
+    }
+    showInitialGreeting() {
+         this.addMessage('Umm... halo. Namaku Mitsuha. Senang bertemu denganmu. Ada yang sedang kamu pikirkan?', 'bot', true);
+    }
+    showApiKeyWarning() {
+        this.addMessage('Ano... sepertinya ada yang kurang. Kamu perlu memasukkan API Key di dalam kode `script`-nya agar aku bisa berbicara. Maaf ya merepotkan...', 'bot', true);
+    }
+    confirmClearHistory() {
+        this.showModal(
+            'Apa kamu yakin ingin melupakan percakapan kita? Semua akan hilang, lho...',
+            () => {
+                localStorage.removeItem('mitsuhaChatHistory');
+                this.chatHistory = [];
+                this.chatMessages.innerHTML = '';
+                this.addMessage('Baiklah... semua sudah kulupakan. Kita mulai dari awal lagi, ya.', 'bot', true);
+            }
+        );
+    }
+    exportChat() {
+        const chatText = this.chatHistory.map(msg => 
+            `${msg.sender === 'user' ? 'Kamu' : 'Mitsuha'}: ${msg.content}`
+        ).join('\n');
+        const blob = new Blob([chatText], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `percakapan-mitsuha-${new Date().toISOString().slice(0, 10)}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 100);
+    }
+    toggleVoice() {
+        this.voiceEnabled = !this.voiceEnabled;
+        this.toggleVoiceButton.innerHTML = this.voiceEnabled ? 
+            '<i class="fas fa-microphone"></i> Suara: Aktif' : 
+            '<i class="fas fa-microphone-slash"></i> Suara: Nonaktif';
+    }
+    speakMessage(text) {
+        if (!this.voiceEnabled) return;
+        // Remove markdown for speech
+        const plainText = text.replace(/[#*_[\]()~`>]/g, '');
+        if ('speechSynthesis' in window) {
+            const utterance = new SpeechSynthesisUtterance(plainText);
+            utterance.lang = 'id-ID';
+            utterance.rate = 0.9;
+            utterance.pitch = 1.1;
+            speechSynthesis.speak(utterance);
+        }
+    }
+    copyMessage(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            // Show temporary feedback
+            const originalText = this.toggleVoiceButton.innerHTML;
+            this.toggleVoiceButton.innerHTML = '<i class="fas fa-check"></i> Tersalin!';
+            setTimeout(() => {
+                this.toggleVoiceButton.innerHTML = originalText;
+            }, 2000);
+        });
+    }
+    copyCode(code) {
+        navigator.clipboard.writeText(code).then(() => {
+            // Find the button and show feedback
+            const buttons = document.querySelectorAll('.copy-btn');
+            buttons.forEach(btn => {
+                if (btn.previousElementSibling && btn.previousElementSibling.textContent === code) {
+                    btn.innerHTML = '<i class="fas fa-check"></i> Disalin!';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.innerHTML = '<i class="fas fa-copy"></i> Salin';
+                        btn.classList.remove('copied');
+                    }, 2000);
+                }
+            });
+        });
+    }
+    showModal(text, onConfirm) {
+        this.modalText.textContent = text;
+        this.modal.classList.add('visible');
+        const confirmHandler = () => {
+            this.hideModal();
+            onConfirm();
+            cleanup();
+        };
+        const cancelHandler = () => {
+            this.hideModal();
+            cleanup();
+        };
+        const cleanup = () => {
+            this.modalConfirmBtn.removeEventListener('click', confirmHandler);
+            this.modalCancelBtn.removeEventListener('click', cancelHandler);
+        };
+        this.modalConfirmBtn.addEventListener('click', confirmHandler);
+        this.modalCancelBtn.addEventListener('click', cancelHandler);
+    }
+    hideModal() {
+        this.modal.classList.remove('visible');
+    }
+    changeTheme(theme) {
+        this.currentTheme = theme;
+        const colors = this.themes[theme];
+        document.body.style.background = `linear-gradient(160deg, ${colors.start}, ${colors.end})`;
+        // Update active theme indicator
+        document.querySelectorAll('.theme-option').forEach(option => {
+            option.classList.remove('active');
+        });
+        document.querySelector(`.theme-option[data-theme="${theme}"]`).classList.add('active');
+    }
+    initBackgroundCanvas() {
+        const canvas = document.getElementById('backgroundCanvas');
+        const ctx = canvas.getContext('2d');
+        // Set canvas size
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+        // Create floating particles
+        const particles = [];
+        const particleCount = 100;
+        for (let i = 0; i < particleCount; i++) {
+            particles.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                radius: Math.random() * 2 + 1,
+                speed: Math.random() * 0.5 + 0.1,
+                angle: Math.random() * Math.PI * 2,
+                opacity: Math.random() * 0.5 + 0.1
+            });
+        }
+        // Animation loop
+        const animate = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Draw gradient background
+            const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+            gradient.addColorStop(0, this.themes[this.currentTheme].start);
+            gradient.addColorStop(1, this.themes[this.currentTheme].end);
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            // Update and draw particles
+            particles.forEach(p => {
+                // Move particle
+                p.x += Math.cos(p.angle) * p.speed;
+                p.y += Math.sin(p.angle) * p.speed;
+                // Bounce off edges
+                if (p.x < 0 || p.x > canvas.width) p.angle = Math.PI - p.angle;
+                if (p.y < 0 || p.y > canvas.height) p.angle = -p.angle;
+                // Draw particle
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${p.opacity})`;
+                ctx.fill();
+            });
+            requestAnimationFrame(animate);
+        };
+        animate();
+    }
+    initThemeSelector() {
+        // Add click handlers to theme options
+        document.querySelectorAll('.theme-option').forEach(option => {
+            option.addEventListener('click', (e) => {
+                const theme = e.target.dataset.theme;
+                this.changeTheme(theme);
+            });
+        });
+    }
+}
+document.addEventListener('DOMContentLoaded', () => {
+    new MitsuhaChatbot();
+});
